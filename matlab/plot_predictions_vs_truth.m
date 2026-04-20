@@ -1,6 +1,6 @@
 % Plot ground-truth and predicted joint actions from the evaluation CSV.
 
-tbl = readtable('../data/real_model_predictions.csv');
+tbl = readtable('../data/act_model_predictions.csv');
 
 num_joints = 6;
 

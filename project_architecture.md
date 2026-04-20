@@ -1,7 +1,7 @@
 # Project Architecture
 
 ## 1. Objective
-Build a two-camera SO-101 robot learning pipeline for towel hanging using a mini VLA-style policy.
+Build a two-camera SO-101 robot learning pipeline for towel hanging using an ACT-style action chunking policy.
 
 ## 2. Inputs
 - overhead camera image
@@ -10,12 +10,12 @@ Build a two-camera SO-101 robot learning pipeline for towel hanging using a mini
 - task instruction
 
 ## 3. Outputs
-- next robot action / joint action chunk
+- next robot action chunk
 
 ## 4. Role of Python
 - LeRobot tools
 - dataset loading
-- mini VLA model training
+- ACT model training
 - policy inference
 
 ## 5. Role of MATLAB

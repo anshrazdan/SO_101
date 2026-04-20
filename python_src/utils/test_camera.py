@@ -3,7 +3,6 @@ import csv
 import time
 
 import cv2
-import numpy as np
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
 

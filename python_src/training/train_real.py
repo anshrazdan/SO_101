@@ -1,4 +1,4 @@
-"""Train the real robot action model from wrist images, robot state, and instructions."""
+"""Train an ACT-style action chunking model from images, robot state, and instructions."""
 
 from pathlib import Path
 import sys
@@ -13,7 +13,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from python_src.datasets.real_robot_dataset import RealRobotDataset
+from python_src.datasets.real_robot_dataset import RealRobotEpisodeCollection
+
+
+ACTION_CHUNK_SIZE = 10
 
 
 class ImageEncoder(nn.Module):
@@ -34,35 +37,58 @@ class ImageEncoder(nn.Module):
         return self.encoder(image)
 
 
-class RealRobotActionNet(nn.Module):
+class ActionChunkingTransformer(nn.Module):
     def __init__(
         self,
         state_dim: int,
         action_dim: int,
         num_instructions: int,
         use_base_image: bool = False,
+        action_chunk_size: int = ACTION_CHUNK_SIZE,
+        hidden_dim: int = 128,
         image_feature_dim: int = 64,
         instruction_embedding_dim: int = 16,
+        num_heads: int = 4,
+        num_layers: int = 2,
     ):
         super().__init__()
         self.use_base_image = use_base_image
+        self.action_chunk_size = action_chunk_size
         self.wrist_encoder = ImageEncoder(output_dim=image_feature_dim)
         self.base_encoder = ImageEncoder(output_dim=image_feature_dim) if use_base_image else None
         self.instruction_embedding = nn.Embedding(
             num_embeddings=num_instructions,
             embedding_dim=instruction_embedding_dim,
         )
-        fusion_input_dim = image_feature_dim + state_dim + instruction_embedding_dim
-        if use_base_image:
-            fusion_input_dim += image_feature_dim
+        self.wrist_projection = nn.Linear(image_feature_dim, hidden_dim)
+        self.base_projection = nn.Linear(image_feature_dim, hidden_dim) if use_base_image else None
+        self.state_projection = nn.Linear(state_dim, hidden_dim)
+        self.instruction_projection = nn.Linear(instruction_embedding_dim, hidden_dim)
 
-        self.fusion = nn.Sequential(
-            nn.Linear(fusion_input_dim, 64),
-            nn.ReLU(),
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=num_heads,
+            dim_feedforward=hidden_dim * 4,
+            dropout=0.1,
+            batch_first=True,
         )
-        self.action_head = nn.Sequential(
-            nn.Linear(64, action_dim),
+        self.observation_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers,
         )
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=hidden_dim,
+            nhead=num_heads,
+            dim_feedforward=hidden_dim * 4,
+            dropout=0.1,
+            batch_first=True,
+        )
+        self.action_decoder = nn.TransformerDecoder(
+            decoder_layer,
+            num_layers=num_layers,
+        )
+        self.action_queries = nn.Parameter(torch.randn(action_chunk_size, hidden_dim) * 0.02)
+        self.action_head = nn.Linear(hidden_dim, action_dim)
 
     def forward(
         self,
@@ -71,38 +97,44 @@ class RealRobotActionNet(nn.Module):
         robot_state: torch.Tensor,
         instruction_id: torch.Tensor,
     ) -> torch.Tensor:
-        wrist_features = self.wrist_encoder(wrist_image)
+        wrist_token = self.wrist_projection(self.wrist_encoder(wrist_image)).unsqueeze(1)
+        state_token = self.state_projection(robot_state).unsqueeze(1)
         instruction_features = self.instruction_embedding(instruction_id)
+        instruction_token = self.instruction_projection(instruction_features).unsqueeze(1)
 
-        features = [wrist_features, robot_state, instruction_features]
+        observation_tokens = [wrist_token, state_token, instruction_token]
         if self.use_base_image:
             if base_image is None or base_image.numel() == 0:
                 raise ValueError("Model expects base_image input, but none was provided.")
-            features.insert(1, self.base_encoder(base_image))
+            base_token = self.base_projection(self.base_encoder(base_image)).unsqueeze(1)
+            observation_tokens.insert(1, base_token)
 
-        combined_features = torch.cat(features, dim=1)
-        fused_features = self.fusion(combined_features)
-        return self.action_head(fused_features)
+        memory = self.observation_encoder(torch.cat(observation_tokens, dim=1))
+        action_queries = self.action_queries.unsqueeze(0).expand(robot_state.size(0), -1, -1)
+        decoded_actions = self.action_decoder(action_queries, memory)
+        return self.action_head(decoded_actions)
 
 
-WristImageStateToActionNet = RealRobotActionNet
+RealRobotActionNet = ActionChunkingTransformer
+WristImageStateToActionNet = ActionChunkingTransformer
 
 
 def main() -> None:
-    dataset = RealRobotDataset(
-        PROJECT_ROOT / "data" / "pilot_dataset" / "episode_1",
-        metadata_filename="metadata_clean.csv",
+    dataset = RealRobotEpisodeCollection(
+        PROJECT_ROOT / "data" / "pilot_dataset",
+        action_chunk_size=ACTION_CHUNK_SIZE,
     )
     dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
     loss_csv_path = PROJECT_ROOT / "data" / "real_training_loss.csv"
-    model_path = PROJECT_ROOT / "data" / "real_model.pth"
+    model_path = PROJECT_ROOT / "data" / "act_model.pth"
     loss_csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-    model = RealRobotActionNet(
+    model = ActionChunkingTransformer(
         state_dim=6,
         action_dim=6,
         num_instructions=len(dataset.instruction_to_index),
         use_base_image=dataset.has_base_image,
+        action_chunk_size=ACTION_CHUNK_SIZE,
     )
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -118,10 +150,10 @@ def main() -> None:
             base_image = batch["base_image"]
             robot_state = batch["robot_state"]
             instruction_id = batch["instruction_id"]
-            target_action = batch["action"]
+            target_action_chunk = batch["action_chunk"]
 
-            predicted_action = model(wrist_image, base_image, robot_state, instruction_id)
-            loss = criterion(predicted_action, target_action)
+            predicted_action_chunk = model(wrist_image, base_image, robot_state, instruction_id)
+            loss = criterion(predicted_action_chunk, target_action_chunk)
 
             optimizer.zero_grad()
             loss.backward()

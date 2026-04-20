@@ -1,4 +1,4 @@
-filename = '../data/real_model_predictions.csv'; % change this line only
+filename = '../data/act_model_predictions.csv'; % change this line only
 tbl = readtable(filename);
 
 num_joints = 6;
