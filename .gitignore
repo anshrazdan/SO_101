@@ -1,7 +1,12 @@
 .venv/
 matlab_venv/
+me_596/
 .vscode/
-data/
+
+data/*
+!data/act_model.pth
+!data/real_training_loss.csv
+!data/act_model_predictions.csv
 
 __pycache__/
 *.py[cod]

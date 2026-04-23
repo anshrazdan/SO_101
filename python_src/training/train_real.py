@@ -137,9 +137,9 @@ def main() -> None:
         action_chunk_size=ACTION_CHUNK_SIZE,
     )
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
 
-    num_epochs = 5
+    num_epochs = 15
     epoch_losses: list[tuple[int, float]] = []
 
     for epoch in range(num_epochs):
@@ -171,7 +171,15 @@ def main() -> None:
         writer.writerow(["epoch", "average_loss"])
         writer.writerows(epoch_losses)
 
-    torch.save(model.state_dict(), model_path)
+    checkpoint = {}
+    checkpoint["model_state_dict"] = model.state_dict()
+    checkpoint["state_mean"] = dataset.state_mean
+    checkpoint["state_std"] = dataset.state_std
+    checkpoint["action_mean"] = dataset.action_mean
+    checkpoint["action_std"] = dataset.action_std
+    checkpoint["instruction_to_index"] = dataset.instruction_to_index
+
+    torch.save(checkpoint, model_path)
     print(f"saved model weights to {model_path}")
 
 

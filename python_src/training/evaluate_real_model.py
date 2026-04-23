@@ -35,7 +35,10 @@ def main() -> None:
         use_base_image=dataset.has_base_image,
         action_chunk_size=ACTION_CHUNK_SIZE,
     )
-    model.load_state_dict(torch.load(model_path, map_location="cpu"))
+    checkpoint = torch.load(model_path, map_location="cpu")
+    model.load_state_dict(checkpoint["model_state_dict"])
+    action_mean = checkpoint["action_mean"]
+    action_std = checkpoint["action_std"]
     model.eval()
 
     num_samples = min(20, len(dataset))
@@ -61,9 +64,13 @@ def main() -> None:
                     sample["robot_state"].unsqueeze(0),
                     sample["instruction_id"].unsqueeze(0),
                 ).squeeze(0)
+
+                predicted_action_chunk = predicted_action_chunk * action_std + action_mean
+                true_action_tensor = sample["action"] * action_std + action_mean
+
                 predicted_action = predicted_action_chunk[0]
 
-                true_action = sample["action"].tolist()
+                true_action = true_action_tensor.tolist()
                 predicted_action_list = predicted_action.tolist()
                 predicted_action_chunk_list = predicted_action_chunk.flatten().tolist()
 

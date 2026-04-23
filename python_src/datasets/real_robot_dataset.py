@@ -16,6 +16,10 @@ class RealRobotDataset(Dataset):
         action_chunk_size: int = 10,
         instruction_to_index: dict[str, int] | None = None,
         use_base_image: bool | None = None,
+        state_mean: torch.Tensor | None = None,
+        state_std: torch.Tensor | None = None,
+        action_mean: torch.Tensor | None = None,
+        action_std: torch.Tensor | None = None,
     ):
         self.episode_dir = Path(episode_dir)
         self.metadata_path = self.episode_dir / metadata_filename
@@ -41,6 +45,26 @@ class RealRobotDataset(Dataset):
             index: instruction for instruction, index in self.instruction_to_index.items()
         }
 
+        if state_mean is None:
+            self.state_mean = torch.zeros(6, dtype=torch.float32)
+        else:
+            self.state_mean = state_mean
+
+        if state_std is None:
+            self.state_std = torch.ones(6, dtype=torch.float32)
+        else:
+            self.state_std = state_std
+
+        if action_mean is None:
+            self.action_mean = torch.zeros(6, dtype=torch.float32)
+        else:
+            self.action_mean = action_mean
+
+        if action_std is None:
+            self.action_std = torch.ones(6, dtype=torch.float32)
+        else:
+            self.action_std = action_std
+
     def __len__(self) -> int:
         return len(self.rows)
 
@@ -62,6 +86,10 @@ class RealRobotDataset(Dataset):
         action_chunk = torch.stack(
             [self._load_action_at(idx + offset) for offset in range(self.action_chunk_size)]
         )
+
+        robot_state = (robot_state - self.state_mean) / self.state_std
+        action = (action - self.action_mean) / self.action_std
+        action_chunk = (action_chunk - self.action_mean) / self.action_std
         instruction = row["instruction"]
         instruction_id = torch.tensor(
             self.instruction_to_index[instruction],
@@ -147,6 +175,49 @@ def build_instruction_index(
     }
 
 
+def compute_state_action_stats(episode_dirs, metadata_filename=None):
+    state_values = []
+    action_values = []
+    for i in range(6):
+        state_values.append([])
+        action_values.append([])
+
+    for episode_dir in episode_dirs:
+        if metadata_filename is None:
+            filename = preferred_metadata_filename(episode_dir)
+        else:
+            filename = metadata_filename
+
+        metadata_path = episode_dir / filename
+        if not metadata_path.exists():
+            continue
+
+        with metadata_path.open("r", newline="", encoding="utf-8") as csv_file:
+            reader = csv.DictReader(csv_file)
+            for row in reader:
+                for i in range(6):
+                    state_values[i].append(float(row[f"state_{i}"]))
+                    action_values[i].append(float(row[f"action_{i}"]))
+
+    state_tensor = torch.tensor(state_values, dtype=torch.float32)
+    action_tensor = torch.tensor(action_values, dtype=torch.float32)
+
+    state_mean = state_tensor.mean(dim=1)
+    state_std = state_tensor.std(dim=1)
+    action_mean = action_tensor.mean(dim=1)
+    action_std = action_tensor.std(dim=1)
+
+    state_std = state_std.clamp(min=1e-6)
+    action_std = action_std.clamp(min=1e-6)
+
+    stats = {}
+    stats["state_mean"] = state_mean
+    stats["state_std"] = state_std
+    stats["action_mean"] = action_mean
+    stats["action_std"] = action_std
+    return stats
+
+
 def metadata_has_base_image(metadata_path: Path) -> bool:
     with metadata_path.open("r", newline="", encoding="utf-8") as csv_file:
         return any(
@@ -188,6 +259,12 @@ class RealRobotEpisodeCollection(ConcatDataset):
             for _, _, metadata_path in usable_episodes
         )
 
+        stats = compute_state_action_stats(episode_dirs, metadata_filename)
+        self.state_mean = stats["state_mean"]
+        self.state_std = stats["state_std"]
+        self.action_mean = stats["action_mean"]
+        self.action_std = stats["action_std"]
+
         datasets = []
         for episode_dir, filename, _ in usable_episodes:
             datasets.append(
@@ -197,6 +274,10 @@ class RealRobotEpisodeCollection(ConcatDataset):
                     action_chunk_size=action_chunk_size,
                     instruction_to_index=self.instruction_to_index,
                     use_base_image=self.has_base_image,
+                    state_mean=self.state_mean,
+                    state_std=self.state_std,
+                    action_mean=self.action_mean,
+                    action_std=self.action_std,
                 )
             )
 
