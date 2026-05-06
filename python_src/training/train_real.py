@@ -139,7 +139,7 @@ def main() -> None:
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
 
-    num_epochs = 15
+    num_epochs = 50
     epoch_losses: list[tuple[int, float]] = []
 
     for epoch in range(num_epochs):
